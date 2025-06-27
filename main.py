@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 
 from models import ChatRequest
 from auth import verify_jwt_token, generate_jwt_and_store_session, store_spotify_tokens, get_spotify_tokens
+from spotify_tools import create_spotify_tools
 
 
 app = FastAPI(title="Simple Chat API", description="FastAPI with JWT Authentication")
