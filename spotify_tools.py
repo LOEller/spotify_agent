@@ -137,6 +137,30 @@ def create_spotify_tools(access_token: str) -> List[Tool]:
             return json.dumps(track_data)
         except Exception as e:
             return f"Error getting recently played: {str(e)}"
+        
+    def play_next_song(input_text: str = ""):
+        """Play the next song in the user's queue"""
+        try:
+            sp.next_track()
+            return "Next song queued"
+        except Exception as e:
+            return f"Error playing next song: {str(e)}"
+        
+    def add_to_queue(input_text: str = ""):
+        """Add a song to the user's queue"""
+        try:
+            sp.add_to_queue(input_text)
+            return "Song added to queue"
+        except Exception as e:
+            return f"Error adding to queue: {str(e)}"
+        
+    def get_user_current_track(input_text: str = ""):
+        """Get the user's current track"""
+        try:
+            current_track = sp.current_user_playing_track()
+            return json.dumps(current_track)
+        except Exception as e:
+            return f"Error getting current track: {str(e)}"
     
     # Return the tools with the access token baked in via closures
     return [
@@ -169,5 +193,20 @@ def create_spotify_tools(access_token: str) -> List[Tool]:
             name="get_recently_played",
             func=get_recently_played,
             description="Get the user's recently played tracks. Optional: specify a number to limit results (e.g., 'last 10 songs')."
+        ),
+        Tool(
+            name="play_next_song",
+            func=play_next_song,
+            description="Play the next song in the user's queue. No input required."
+        ),
+        Tool(
+            name="add_to_queue",
+            func=add_to_queue,
+            description="Add a song to the user's queue. Input should be a song id, song uri or URL."
+        ),
+        Tool(
+            name="get_user_current_track",
+            func=get_user_current_track,
+            description="Get the user's current track. No input required."
         )
     ]
