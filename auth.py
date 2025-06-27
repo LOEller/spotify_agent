@@ -139,3 +139,69 @@ def get_spotify_tokens(session_id: str):
         'expires_at': session_data.get('spotify_token_expires_at'),
         'scope': session_data.get('spotify_scope')
     }
+
+def store_conversation_message(session_id: str, conversation_id: str, message: str, response: str):
+    """
+    Store a conversation message and response in Firestore
+    """
+    conversation_ref = db.collection('conversations').document(f"{session_id}_{conversation_id}")
+    
+    message_data = {
+        'timestamp': datetime.now(timezone.utc),
+        'message': message,
+        'response': response
+    }
+    
+    # Get existing conversation or create new one
+    conversation_doc = conversation_ref.get()
+    if conversation_doc.exists:
+        # Add to existing conversation
+        conversation_ref.update({
+            'messages': firestore.ArrayUnion([message_data]),
+            'updated_at': datetime.now(timezone.utc)
+        })
+    else:
+        # Create new conversation
+        conversation_ref.set({
+            'session_id': session_id,
+            'conversation_id': conversation_id,
+            'created_at': datetime.now(timezone.utc),
+            'updated_at': datetime.now(timezone.utc),
+            'messages': [message_data]
+        })
+
+def get_conversation_history(session_id: str, conversation_id: str, limit: int = 10):
+    """
+    Get conversation history for a session and conversation ID
+    Returns list of messages in chronological order
+    """
+    conversation_ref = db.collection('conversations').document(f"{session_id}_{conversation_id}")
+    conversation_doc = conversation_ref.get()
+    
+    if not conversation_doc.exists:
+        return []
+    
+    conversation_data = conversation_doc.to_dict()
+    messages = conversation_data.get('messages', [])
+    
+    # Sort by timestamp and limit
+    messages.sort(key=lambda x: x['timestamp'])
+    return messages[-limit:] if limit else messages
+
+def get_user_conversations(session_id: str):
+    """
+    Get all conversations for a user session
+    """
+    conversations = db.collection('conversations').where('session_id', '==', session_id).stream()
+    
+    conversation_list = []
+    for conv in conversations:
+        conv_data = conv.to_dict()
+        conversation_list.append({
+            'conversation_id': conv_data['conversation_id'],
+            'created_at': conv_data['created_at'],
+            'updated_at': conv_data['updated_at'],
+            'message_count': len(conv_data.get('messages', []))
+        })
+    
+    return sorted(conversation_list, key=lambda x: x['updated_at'], reverse=True)

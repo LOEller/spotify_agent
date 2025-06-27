@@ -8,9 +8,19 @@ import base64
 from langchain.agents import create_openai_functions_agent, AgentExecutor
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage
 
 from models import ChatRequest
-from auth import verify_jwt_token, generate_jwt_and_store_session, store_spotify_tokens, get_spotify_tokens
+from auth import (
+    verify_jwt_token, 
+    generate_jwt_and_store_session, 
+    store_spotify_tokens, 
+    get_spotify_tokens,
+    store_conversation_message,
+    get_conversation_history,
+    get_user_conversations
+)
 from spotify_tools import create_spotify_tools
 
 
@@ -127,7 +137,7 @@ async def spotify_callback(
 @app.post("/chat")
 async def chat_endpoint(chat_request: ChatRequest, current_user: dict = Depends(verify_jwt_token)):
     """
-    Chat endpoint that uses a LangChain agent with Spotify tools
+    Chat endpoint that uses a LangChain agent with Spotify tools and conversation memory
     """
     session_id = current_user.get("session_id")
     
@@ -141,18 +151,37 @@ async def chat_endpoint(chat_request: ChatRequest, current_user: dict = Depends(
             "spotify_authenticated": False
         }
     
+    # Get or create conversation ID
+    conversation_id = chat_request.conversation_id or str(uuid.uuid4())
+    
     try:
+        # Get conversation history
+        conversation_history = get_conversation_history(session_id, conversation_id, limit=10)
+        
         # Create Spotify tools with the user's access token
         spotify_tools = create_spotify_tools(spotify_tokens['access_token'])
         
-        # Initialize the LLM (you'll need to set OPENAI_API_KEY environment variable)
+        # Initialize the LLM
         llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
         
-        # Create the agent prompt
+        # Create memory and populate with conversation history
+        memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True
+        )
+        
+        # Add previous messages to memory
+        for msg in conversation_history:
+            memory.chat_memory.add_user_message(msg['message'])
+            memory.chat_memory.add_ai_message(msg['response'])
+        
+        # Create the agent prompt with memory
         prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a helpful AI assistant that can access a user's Spotify data. 
             You can help users explore their music, find songs, analyze their listening habits, and more.
             Always be conversational and helpful. When you use tools, explain what you're doing.
+            
+            You have access to our conversation history, so you can reference previous topics and build upon them.
             
             Available tools allow you to:
             - Get user profile information
@@ -163,20 +192,35 @@ async def chat_endpoint(chat_request: ChatRequest, current_user: dict = Depends(
             - Get recently played tracks
             
             Respond naturally and helpfully to the user's request."""),
+            MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
         
-        # Create the agent
+        # Create the agent with memory
         agent = create_openai_functions_agent(llm, spotify_tools, prompt)
-        agent_executor = AgentExecutor(agent=agent, tools=spotify_tools, verbose=True)
+        agent_executor = AgentExecutor(
+            agent=agent, 
+            tools=spotify_tools, 
+            memory=memory,
+            verbose=True
+        )
         
         # Run the agent
         result = agent_executor.invoke({"input": chat_request.message})
         
+        # Store the conversation message and response
+        store_conversation_message(
+            session_id, 
+            conversation_id, 
+            chat_request.message, 
+            result["output"]
+        )
+        
         return {
             "message": result["output"],
             "received_message": chat_request.message,
+            "conversation_id": conversation_id,
             "spotify_authenticated": True
         }
         
@@ -185,6 +229,7 @@ async def chat_endpoint(chat_request: ChatRequest, current_user: dict = Depends(
         return {
             "message": f"Sorry, I encountered an error: {str(e)}",
             "received_message": chat_request.message,
+            "conversation_id": conversation_id,
             "spotify_authenticated": True,
             "error": str(e)
         }
@@ -224,6 +269,51 @@ async def spotify_login():
         "expires_in": 3600,
         "message": "Visit the auth_url to complete Spotify authentication. Use the access_token for subsequent API calls."
     }
+
+@app.get("/conversations")
+async def get_conversations(current_user: dict = Depends(verify_jwt_token)):
+    """
+    Get all conversations for the current user
+    """
+    session_id = current_user.get("session_id")
+    
+    try:
+        conversations = get_user_conversations(session_id)
+        return {
+            "conversations": conversations,
+            "total": len(conversations)
+        }
+    except Exception as e:
+        print(f"Error getting conversations: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve conversations"
+        )
+
+@app.get("/conversations/{conversation_id}/history")
+async def get_conversation_history_endpoint(
+    conversation_id: str, 
+    current_user: dict = Depends(verify_jwt_token),
+    limit: int = Query(default=50, le=100, description="Maximum number of messages to retrieve")
+):
+    """
+    Get conversation history for a specific conversation
+    """
+    session_id = current_user.get("session_id")
+    
+    try:
+        history = get_conversation_history(session_id, conversation_id, limit)
+        return {
+            "conversation_id": conversation_id,
+            "history": history,
+            "message_count": len(history)
+        }
+    except Exception as e:
+        print(f"Error getting conversation history: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve conversation history"
+        )
 
 if __name__ == "__main__":
     import uvicorn
